@@ -1,4 +1,5 @@
 import os
+from multiprocessing import cpu_count
 
 import numpy as np
 import torch
@@ -8,6 +9,7 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from torch.autograd import Variable
 from core.model.lenet import LeNet
+from torch.utils import data
 
 """
     Deeplite coding challenge.
@@ -24,6 +26,26 @@ from core.model.lenet import LeNet
     *** You need to install torch 0.3.1 on ubuntu
     *** You can use GPU or CPU for fine-tuning
 """
+
+
+def force_makedir(dir):
+    if not os.path.isdir(dir):
+        os.makedirs(dir)
+
+
+def transform_train_op():
+    t = transforms.Compose([transforms.RandomHorizontalFlip(),
+                            transforms.Scale(32),
+                            transforms.ToTensor(),
+                            transforms.Normalize([.1307], [.3081])])
+    return t
+
+
+def transform_test_op():
+    t = transforms.Compose([transforms.Scale(32),
+                            transforms.ToTensor(),
+                            transforms.Normalize([.1307], [.3081])])
+    return t
 
 
 def get_mnist_dataloaders(root, batch_size):
@@ -45,9 +67,13 @@ def get_mnist_dataloaders(root, batch_size):
     :param batch_size: Number of samples in each mini-batch
     :return: tuple
     """
-    if not os.path.isdir(root):
-        os.makedirs(root)
-    
+    force_makedir(root)
+    mnist_data_train = datasets.MNIST(root, train=True, download=True, transform=transform_train_op())
+    mnist_data_test = datasets.MNIST(root, train=False, download=True, transform=transform_test_op())
+    mnist_train_data_loader = data.DataLoader(mnist_data_train, batch_size=batch_size, shuffle=True,
+                                              num_workers=cpu_count())
+    mnist_test_data_loader = data.DataLoader(mnist_data_test, batch_size=1, shuffle=False, num_workers=cpu_count())
+    return mnist_train_data_loader, mnist_test_data_loader
 
 
 def get_accuracy_top1(model, data_loader):
@@ -57,7 +83,11 @@ def get_accuracy_top1(model, data_loader):
     :param data_loader: torch.utils.data.DataLoader
     :return: float
     """
-    pass
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    for data, target in data_loader:
+        data, target = data.to(device), target.to(device)
+        output = model(data)
+        k = 0
 
 
 def prune_model(model, threshold):
@@ -85,5 +115,10 @@ if __name__ == '__main__':
     model = torch.load(open('lenet.pth', 'rb'))
     # Do your things
 
+    # Device configuration
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+
     train_loader, test_loader = get_mnist_dataloaders('data', 16)
+    acc = get_accuracy_top1(model, test_loader)
 
