@@ -12,7 +12,6 @@ class LeNet(nn.Module):
                                       nn.MaxPool2d(kernel_size=2),
                                       )
 
-
         self.classifier = nn.Sequential(nn.Linear(16 * 5 * 5, 120),
                                         nn.ReLU(inplace=True),
                                         nn.Dropout(p=0.3),
@@ -21,11 +20,15 @@ class LeNet(nn.Module):
                                         nn.Linear(84, 10),
                                         )
 
+        self.softmax_layer = nn.Softmax()
+
     def forward(self, x):
         x = self.features(x)
         x = x.view(x.size(0), -1)
         x = self.classifier(x)
         return x
 
-if __name__ == '__main__':
-    pass
+    def infer_out(self, x):
+        x = self.forward(x)
+        x = self.softmax_layer(x)
+        return x
