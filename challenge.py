@@ -219,7 +219,7 @@ def get_threshold(model):
     stds = [p.std() for p in params]
     params_mean = np.mean(means)
     params_std = np.mean(stds)
-    thres = abs(abs(params_mean) - 1.2 * abs(params_std))
+    thres = abs(abs(params_mean) - 3.0 * abs(params_std))
     return thres
 
 
@@ -257,7 +257,7 @@ if __name__ == '__main__':
     print_and_log('Loading model from ' + load_model_fpath, log_fpath)
     model.load_state_dict(torch.load(load_model_fpath))
 
-    train_loader, test_loader = get_mnist_dataloaders('data', 16)
+    train_loader, test_loader = get_mnist_dataloaders('data', 64)
 
     acc = get_accuracy_top1(model, test_loader)
     print_and_log('Initial accuracy = ' + str(acc), log_fpath)
