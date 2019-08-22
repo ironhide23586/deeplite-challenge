@@ -124,7 +124,7 @@ def prune_model(model, threshold):
     return num_params_pruned, total_num_params, pruned_fraction, zero_fraction
 
 
-def prune_model_finetune(model, train_loader, test_loader, threshold, out_dir, train_epochs=2, learn_rate=1e-4,
+def prune_model_finetune(model, train_loader, test_loader, threshold, out_dir, train_epochs=50, learn_rate=1e-4,
                          eval_freq=20):
     """
     This function should first set the model's weight to 0 if their absolutes values are lower or equal to the given
@@ -181,10 +181,10 @@ def prune_model_finetune(model, train_loader, test_loader, threshold, out_dir, t
             print_and_log('Iter ' + str(train_step) + ', loss = ' + str(loss.item()), log_fpath)
             loss_plot.append([train_step, loss.item()])
             prune_model(model, threshold)
-            train_step += 1
 
             if train_step % eval_freq == 0:
                 acc = get_accuracy_top1(model, test_loader)
+                print_and_log('--> Validation top1 accuracy = ' + str(acc), log_fpath)
                 acc_plot.append([train_step, acc])
                 model_fname = '_'.join(['lenet_pruned', str(train_step) + 'step', str(acc) + 'accuracy']) \
                               + '.torchmodel'
@@ -210,6 +210,8 @@ def prune_model_finetune(model, train_loader, test_loader, threshold, out_dir, t
                 plt.xlabel('Training Iterations')
                 plt.ylabel('Top-1 Validation Accuracies')
                 plt.savefig(accuracy_plot_save_path)
+
+            train_step += 1
     print_and_log('Done!', log_fpath)
 
 
