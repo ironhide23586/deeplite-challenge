@@ -1,4 +1,2 @@
-.idea*
-data
-*trained_models*
-*__pycache__*
+*train_sessions*
+onnx_pruning/vgg19.onnx
