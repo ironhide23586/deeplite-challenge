@@ -61,13 +61,13 @@ if __name__ == '__main__':
     # output_names = ['logit_outs']
     # torch.onnx.export(model, dummy_input, "vgg19.onnx", verbose=True, input_names=input_names,
     #                   output_names=output_names, export_params=True)
-    #                   # dynamic_axis={'image_input': {0: 'batch_size'}, 'logit_outs': {0: 'batch_size'}})
+                      # dynamic_axis={'image_input': {0: 'batch_size'}, 'logit_outs': {0: 'batch_size'}})
     # ----------------- CREATION OF ONNX MODEL FROM PRETRAINED PYTORCH MODEL ----------------- #
 
     # -------------------------------- OPERATING ON ONNX MODEL -------------------------------- #
     model = onnx.load('vgg19.onnx')
-    # onnx.checker.check_model(model)
-    # print(onnx.helper.printable_graph(model.graph))
+    onnx.checker.check_model(model)
+    print(onnx.helper.printable_graph(model.graph))
 
     pruned_model = prune(model, 20)
     k = 0
