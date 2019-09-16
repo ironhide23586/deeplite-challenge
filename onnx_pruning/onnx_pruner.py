@@ -20,7 +20,7 @@ import torch
 import torchvision
 
 import onnx
-from onnx import shape_inference, numpy_helper
+from onnx import shape_inference, numpy_helper, helper
 
 
 def prune(model, x):
@@ -45,9 +45,13 @@ def prune(model, x):
             all_conv_node_indices.append(i)
     all_conv_nodes = np.array(all_conv_nodes)
     all_conv_node_indices = np.array(all_conv_node_indices)
+    num_conv_nodes = all_conv_nodes.shape[0]
     weight_inits = model.graph.initializer
     for w in weight_inits:
         param_name_map[w.name] = w
+    selected_conv_indices = all_conv_node_indices.copy()
+    np.random.shuffle(selected_conv_indices)
+    selected_conv_node_count =
     k = 0
 
 
