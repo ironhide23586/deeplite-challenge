@@ -49,9 +49,11 @@ def prune(model, x):
     weight_inits = model.graph.initializer
     for w in weight_inits:
         param_name_map[w.name] = w
-    selected_conv_indices = all_conv_node_indices.copy()
-    np.random.shuffle(selected_conv_indices)
-    selected_conv_node_count =
+    all_conv_node_indices_shuffled = all_conv_node_indices.copy()
+    np.random.shuffle(all_conv_node_indices_shuffled)
+    selected_conv_node_count = int(((100 - x) / 100.) * all_conv_node_indices_shuffled.shape[0])
+    selected_conv_node_indices = np.sort(all_conv_node_indices_shuffled[:selected_conv_node_count])
+    rejected_conv_node_indices = np.sort(all_conv_node_indices_shuffled[selected_conv_node_count:])
     k = 0
 
 
