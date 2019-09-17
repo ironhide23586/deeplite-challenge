@@ -30,7 +30,6 @@ def prune(model, x):
     :return: pruned model
     """
     num_nodes = len(model.graph.node)
-    all_conv_nodes = []
     all_conv_node_indices = []
     plural_nodes = []
     node_name_map = {}
@@ -41,19 +40,24 @@ def prune(model, x):
         if len(model.graph.node[i].output) > 1:
             plural_nodes.append(model.graph.node[i])
         if model.graph.node[i].op_type == 'Conv':
-            all_conv_nodes.append(model.graph.node[i])
             all_conv_node_indices.append(i)
-    all_conv_nodes = np.array(all_conv_nodes)
     all_conv_node_indices = np.array(all_conv_node_indices)
-    num_conv_nodes = all_conv_nodes.shape[0]
     weight_inits = model.graph.initializer
     for w in weight_inits:
         param_name_map[w.name] = w
     all_conv_node_indices_shuffled = all_conv_node_indices.copy()
     np.random.shuffle(all_conv_node_indices_shuffled)
     selected_conv_node_count = int(((100 - x) / 100.) * all_conv_node_indices_shuffled.shape[0])
-    selected_conv_node_indices = np.sort(all_conv_node_indices_shuffled[:selected_conv_node_count])
-    rejected_conv_node_indices = np.sort(all_conv_node_indices_shuffled[selected_conv_node_count:])
+    rejected_node_indices = all_conv_node_indices_shuffled[selected_conv_node_count:]
+    for idx in rejected_node_indices:
+        if model.graph.node[idx + 1].op_type == 'Relu' or model.graph.node[idx + 1].op_type == 'Dropout':
+            rejected_node_indices = np.hstack([rejected_node_indices, [idx + 1]])
+    new_nn_nodes = []
+    for i in range(num_nodes):
+        if i in rejected_node_indices:
+            continue
+        else:
+            new_nn_nodes.append(model.graph.node[i])
     k = 0
 
 
