@@ -49,15 +49,40 @@ def prune(model, x):
     np.random.shuffle(all_conv_node_indices_shuffled)
     selected_conv_node_count = int(((100 - x) / 100.) * all_conv_node_indices_shuffled.shape[0])
     rejected_node_indices = all_conv_node_indices_shuffled[selected_conv_node_count:]
-    for idx in rejected_node_indices:
-        if model.graph.node[idx + 1].op_type == 'Relu' or model.graph.node[idx + 1].op_type == 'Dropout':
-            rejected_node_indices = np.hstack([rejected_node_indices, [idx + 1]])
+    rejected_node_names = []
+    for idx in rejected_node_indices:  # finding full sets of nodes qualified for removal
+        rejected_node_names.append(model.graph.node[idx].name)
+        idx_local = idx + 1
+        while model.graph.node[idx_local].op_type in ['Relu', 'Dropout', 'MaxPool']:  # Expand this list with 1-to-1 ops
+            rejected_node_indices = np.hstack([rejected_node_indices, [idx_local]])
+            rejected_node_names.append(model.graph.node[idx_local].name)
+            idx_local += 1
     new_nn_nodes = []
-    for i in range(num_nodes):
+    new_nn_param_names = []
+    for i in range(num_nodes):  # identifying required param nodes in the new neural net
         if i in rejected_node_indices:
             continue
         else:
             new_nn_nodes.append(model.graph.node[i])
+            param_names = model.graph.node[i].input[1:]
+            for name in param_names:
+                if name in param_name_map:
+                    new_nn_param_names.append(name)
+    new_nn_param_names = list(set(new_nn_param_names))
+    new_nn_params = [param_name_map[name] for name in new_nn_param_names]
+    for i in range(len(new_nn_nodes)):  # rewiring the neural net to fill gaps created by missing layers
+        if len(new_nn_nodes[i].input) == 0:
+            continue
+        input_node_name = new_nn_nodes[i].input[0]
+        while input_node_name in rejected_node_names:
+            if len(node_name_map[input_node_name].input) > 0:
+                input_node_name = node_name_map[input_node_name].input[0]
+            else:
+                input_node_name = ''
+        if len(input_node_name) > 0:
+            new_nn_nodes[i].input[0] = input_node_name
+        else:
+            new_nn_nodes[i].input = new_nn_nodes[i].input[1:]
     k = 0
 
 
@@ -77,7 +102,7 @@ if __name__ == '__main__':
     # -------------------------------- OPERATING ON ONNX MODEL -------------------------------- #
     model = onnx.load('vgg19.onnx')
     onnx.checker.check_model(model)
-    print(onnx.helper.printable_graph(model.graph))
+    print(helper.printable_graph(model.graph))
 
     pruned_model = prune(model, 20)
     k = 0
