@@ -34,6 +34,7 @@ def prune(model, x):
     plural_nodes = []
     node_name_map = {}
     param_name_map = {}
+    input_name_map = {}
     for i in range(num_nodes):
         model.graph.node[i].name = model.graph.node[i].output[0]
         node_name_map[model.graph.node[i].name] = model.graph.node[i]
@@ -42,9 +43,13 @@ def prune(model, x):
         if model.graph.node[i].op_type == 'Conv':
             all_conv_node_indices.append(i)
     all_conv_node_indices = np.array(all_conv_node_indices)
-    weight_inits = model.graph.initializer
-    for w in weight_inits:
-        param_name_map[w.name] = w
+
+    for param in model.graph.initializer:
+        param_name_map[param.name] = param
+
+    for inp in model.graph.input:
+        input_name_map[inp.name] = inp
+
     all_conv_node_indices_shuffled = all_conv_node_indices.copy()
     np.random.shuffle(all_conv_node_indices_shuffled)
     selected_conv_node_count = int(((100 - x) / 100.) * all_conv_node_indices_shuffled.shape[0])
@@ -53,23 +58,27 @@ def prune(model, x):
     for idx in rejected_node_indices:  # finding full sets of nodes qualified for removal
         rejected_node_names.append(model.graph.node[idx].name)
         idx_local = idx + 1
-        while model.graph.node[idx_local].op_type in ['Relu', 'Dropout', 'MaxPool']:  # Expand this list with 1-to-1 ops
+
+        # Expand this exclusion list with 1-to-1 ops found at https://github.com/onnx/onnx/blob/master/docs/Operators.md
+        while model.graph.node[idx_local].op_type in ['Relu', 'Dropout', 'MaxPool']:
             rejected_node_indices = np.hstack([rejected_node_indices, [idx_local]])
             rejected_node_names.append(model.graph.node[idx_local].name)
             idx_local += 1
     new_nn_nodes = []
-    new_nn_param_names = []
-    for i in range(num_nodes):  # identifying required param nodes in the new neural net
+    # new_nn_input_names = [model.graph.input[0].name]
+    new_nn_input_names = []
+    for i in range(num_nodes):  # identifying required input nodes in the new neural net
         if i in rejected_node_indices:
             continue
         else:
             new_nn_nodes.append(model.graph.node[i])
-            param_names = model.graph.node[i].input[1:]
-            for name in param_names:
-                if name in param_name_map:
-                    new_nn_param_names.append(name)
-    new_nn_param_names = list(set(new_nn_param_names))
-    new_nn_params = [param_name_map[name] for name in new_nn_param_names]
+            input_names = model.graph.node[i].input[1:]
+            for name in input_names:
+                if name in input_name_map:
+                    new_nn_input_names.append(name)
+    new_nn_input_names = list(set(new_nn_input_names))
+    # new_nn_inputs = [input_name_map[name] for name in new_nn_input_names]
+    new_nn_params = [param_name_map[name] for name in new_nn_input_names if name != model.graph.input[0].name]
     for i in range(len(new_nn_nodes)):  # rewiring the neural net to fill gaps created by missing layers
         if len(new_nn_nodes[i].input) == 0:
             continue
@@ -83,6 +92,13 @@ def prune(model, x):
             new_nn_nodes[i].input[0] = input_node_name
         else:
             new_nn_nodes[i].input = new_nn_nodes[i].input[1:]
+    new_nn_graph = helper.make_graph(
+        new_nn_nodes,
+        "ConvNet-trimmed",
+        [model.graph.input[0]],
+        model.graph.output
+    )
+    new_nn_model = helper.make_model(new_nn_graph)
     k = 0
 
 
