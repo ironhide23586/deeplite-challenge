@@ -15,9 +15,13 @@
 """
 
 import numpy as np
+import cv2
 
 import torch
 import torchvision
+
+import mxnet as mx
+import mxnet.contrib.onnx as onnx_mxnet
 
 import onnx
 from onnx import shape_inference, numpy_helper, helper
@@ -65,7 +69,6 @@ def prune(model, x):
             rejected_node_names.append(model.graph.node[idx_local].name)
             idx_local += 1
     new_nn_nodes = []
-    # new_nn_input_names = [model.graph.input[0].name]
     new_nn_input_names = []
     for i in range(num_nodes):  # identifying required input nodes in the new neural net
         if i in rejected_node_indices:
@@ -102,27 +105,65 @@ def prune(model, x):
     new_nn_model = helper.make_model(new_nn_graph)
     onnx.checker.check_model(new_nn_model)
     # shape_inferred_model = shape_inference.infer_shapes(new_nn_model)
-    onnx.save_model(new_nn_model, 'vgg19_pruned.onnx')
+    return new_nn_model
+
+
+def logit2class_mapper():
+    with open('imagenet_classes.txt', 'r') as f:
+        class_keys = f.readlines()
+        class_keys = [cls.strip() for cls in class_keys]
+    with open('imagenet_synsets.txt', 'r') as f:
+        data = f.readlines()
+        key2label_map = {d.strip().split(' ')[0]: ' '.join(d.strip().split(' ')[1:]) for d in data}
+    logitmap = [key2label_map[k] for k in class_keys]
+    return logitmap
 
 
 if __name__ == '__main__':
 
+    logitmap = logit2class_mapper()
+    im = cv2.resize(cv2.imread('car.jpg'), (224, 224))[:, :, [2, 1, 0]]
+    im = (np.rollaxis(im, 2, 0) / 255.).astype(np.float32)
+    im = np.expand_dims(im, 0)
+
     # ----------------- CREATION OF ONNX MODEL FROM PRETRAINED PYTORCH MODEL ----------------- #
     # model = torchvision.models.vgg19(pretrained=True).cuda()
-    # dummy_input = torch.randn(10, 3, 224, 224, device='cuda')
-    # dummy_output = model.forward(dummy_input)
+    # dummy_input = torch.from_numpy(im).cuda()
+    # dummy_output = model.forward(dummy_input).cpu().detach().numpy()[0]
+    # out_label = logitmap[dummy_output.argmax()]
+    # print(out_label)
     # input_names = ['image_input']
     # output_names = ['logit_outs']
     # torch.onnx.export(model, dummy_input, "vgg19.onnx", verbose=True, input_names=input_names,
     #                   output_names=output_names, export_params=True)
-                      # dynamic_axis={'image_input': {0: 'batch_size'}, 'logit_outs': {0: 'batch_size'}})
     # ----------------- CREATION OF ONNX MODEL FROM PRETRAINED PYTORCH MODEL ----------------- #
 
     # -------------------------------- OPERATING ON ONNX MODEL -------------------------------- #
-    model = onnx.load('vgg19.onnx')
-    onnx.checker.check_model(model)
-    print(helper.printable_graph(model.graph))
-
-    pruned_model = prune(model, 20)
-    k = 0
+    # model = onnx.load('vgg19.onnx')
+    # onnx.checker.check_model(model)
+    # print('Original model -')
+    # print(helper.printable_graph(model.graph))
+    #
+    # pruned_model = prune(model, 20)
+    # print('Pruned model -')
+    # print(helper.printable_graph(pruned_model.graph))
+    # onnx.save_model(pruned_model, 'vgg19_pruned.onnx')
     # -------------------------------- OPERATING ON ONNX MODEL -------------------------------- #
+
+    # ----------------- LOADING PRUNED ONNX MODEL AND VALIDATION IN MXNET ----------------- #
+    # KeyError: 'concat0' -> https://github.com/apache/incubator-mxnet/issues/13949 (open GitHub issue)
+    # modified mxnet source code at -
+    # https://github.com/apache/incubator-mxnet/blob/master/python/mxnet/contrib/onnx/onnx2mx/_op_translations.py#L462
+    # to accommodate for missing shape of resulting tensor after reshaping.
+    # Source code changed -
+    # reshape_shape = list(proto_obj._params[inputs[1].name].asnumpy()) (previous)
+    # reshape_shape = [1, 25088] (replaced with this, hacky solution for now)
+    # Ideally this should be a flatten operator but PyTorch exports it as a reshape :(
+    sym, arg, aux = onnx_mxnet.import_model('vgg19.onnx')
+    data_names = [graph_input for graph_input in sym.list_inputs()
+                  if graph_input not in arg and graph_input not in aux]
+    mod = mx.mod.Module(symbol=sym, data_names=data_names, context=mx.gpu(), label_names=logitmap)
+
+    mod.bind(for_training=False, data_shapes=[(data_names[0], im.shape)], label_shapes=None)
+    k = 0
+    # ----------------- LOADING PRUNED ONNX MODEL AND VALIDATION IN MXNET ----------------- #
