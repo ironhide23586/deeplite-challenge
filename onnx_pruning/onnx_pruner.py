@@ -77,7 +77,7 @@ def prune(model, x):
                 if name in input_name_map:
                     new_nn_input_names.append(name)
     new_nn_input_names = list(set(new_nn_input_names))
-    # new_nn_inputs = [input_name_map[name] for name in new_nn_input_names]
+    new_nn_inputs = [input_name_map[name] for name in new_nn_input_names]
     new_nn_params = [param_name_map[name] for name in new_nn_input_names if name != model.graph.input[0].name]
     for i in range(len(new_nn_nodes)):  # rewiring the neural net to fill gaps created by missing layers
         if len(new_nn_nodes[i].input) == 0:
@@ -95,11 +95,14 @@ def prune(model, x):
     new_nn_graph = helper.make_graph(
         new_nn_nodes,
         "ConvNet-trimmed",
-        [model.graph.input[0]],
-        model.graph.output
+        [model.graph.input[0]] + new_nn_inputs,
+        model.graph.output,
+        new_nn_params
     )
     new_nn_model = helper.make_model(new_nn_graph)
-    k = 0
+    onnx.checker.check_model(new_nn_model)
+    # shape_inferred_model = shape_inference.infer_shapes(new_nn_model)
+    onnx.save_model(new_nn_model, 'vgg19_pruned.onnx')
 
 
 if __name__ == '__main__':
