@@ -40,11 +40,10 @@ def extract_linked_oneop_node_names(node_name_map, node_name):
 
 
 def extract_next_ingraph(node_name_map, node_name, rejected_node_names):
-    node = node_name_map[node_name]
     if node_name not in rejected_node_names:
-        return node
-    for inp_name in node.input:
-        if inp_name in node_name_map:
+        return node_name
+    for inp_name in node_name_map[node_name].input:
+        if inp_name in node_name_map or inp_name == 'image_input':
             return extract_next_ingraph(node_name_map, inp_name, rejected_node_names)
     return -1
 
@@ -80,7 +79,8 @@ def prune(model, x):
 
     for inp in model.graph.input:
         input_name_map[inp.name] = inp
-
+    input_shape = [d.dim_value for d in input_name_map['image_input'].type.tensor_type.shape.dim]
+    shape_map['image_input'] = input_shape
     all_conv_node_names_shuffled = list(all_conv_node_names.copy())
     np.random.shuffle(all_conv_node_names_shuffled)
     selected_conv_node_count = int(((100 - x) / 100.) * len(all_conv_node_names_shuffled))
@@ -110,44 +110,95 @@ def prune(model, x):
         for j in range(len(node.input)):
             inp_name = node.input[j]
             if inp_name in rejected_node_names:
-                ingraph_input_node = extract_next_ingraph(node_name_map, inp_name, rejected_node_names)
-                node.input[j] = ingraph_input_node.name
-                input_shape = shape_map[ingraph_input_node.name]
-                output_shape = shape_map[new_nn_nodes[i].name]
-                in_channels = input_shape[1]
-                out_channels = output_shape[1]
-                for weight_name in node.input:
-                    if weight_name in param_name_map and len(param_name_map[weight_name].dims) == 4:
-                        conv_param_name = weight_name
-                conv_param = param_name_map[conv_param_name]
-                conv_input = input_name_map[conv_param_name]
-                conv_filter_dims = conv_param.dims  # in_channels, out_channels, kernel_height, kernel_width
-                if conv_filter_dims[0] != in_channels:
-                    filter_values = numpy_helper.to_array(conv_param)
-                    k = 0
-        k = 0
-        # input_node_name = new_nn_nodes[i].input[0]
-        # while input_node_name in rejected_node_names:
-        #     if len(node_name_map[input_node_name].input) > 0:
-        #         input_node_name = node_name_map[input_node_name].input[0]
-        #     else:
-        #         input_node_name = ''
-        # if len(input_node_name) > 0:
-        #     new_nn_nodes[i].input[0] = input_node_name
-        # else:
-        #     new_nn_nodes[i].input = new_nn_nodes[i].input[1:]
+                ingraph_input_node_name = extract_next_ingraph(node_name_map, inp_name, rejected_node_names)
+                node.input[j] = ingraph_input_node_name
+
+                if node.op_type == 'Conv':
+                    input_shape = shape_map[ingraph_input_node_name]
+                    output_shape = shape_map[new_nn_nodes[i].name]
+                    in_channels = input_shape[1]
+                    out_channels = output_shape[1]
+                    for weight_name in node.input:
+                        if weight_name in param_name_map and len(param_name_map[weight_name].dims) == 4:
+                            conv_param_name = weight_name
+                    conv_param = param_name_map[conv_param_name]
+                    conv_input = input_name_map[conv_param_name]
+                    conv_filter_dims = conv_param.dims  # in_c, out_c, kernel_height, kernel_width
+
+                    # filling re-aligning conv filter through kernel interpolation to work with new dimensions
+                    if conv_filter_dims[0] != in_channels:
+                        # internally implemented as -
+                        # np.frombuffer(conv_param.raw_data, dtype=np.float32).reshape(conv_param.dims)
+                        filter_values = numpy_helper.to_array(conv_param)
+
+                        fmap_size = conv_filter_dims[0]
+                        num_fmaps = conv_filter_dims[1]
+                        new_filter = np.zeros([in_channels, out_channels, conv_filter_dims[2], conv_filter_dims[3]])
+                        for fmap_idx in range(num_fmaps):
+                            fmap = filter_values[:, fmap_idx, :, :]
+                            new_fmap = np.zeros([in_channels, conv_filter_dims[2], conv_filter_dims[3]])
+                            for row_idx in range(conv_filter_dims[2]):
+                                fmap_slice = fmap[:, row_idx, :]
+
+                                # opencv resize does filter kernel interpolation and accepts new dims as width, height
+                                fmap_slice_interpolated = cv2.resize(fmap_slice, (fmap_slice.shape[1], in_channels))
+
+                                new_fmap[:, row_idx, :] = fmap_slice_interpolated
+                            new_filter[:, fmap_idx, :, :] = new_fmap
+                            conv_param.raw_data = new_filter.tobytes()
+                            conv_param.dims[0] = in_channels
+                            conv_input.type.tensor_type.shape.dim[0].dim_value = in_channels
 
     new_nn_graph = helper.make_graph(
         new_nn_nodes,
-        "ConvNet-trimmed",
+        "ConvNet-trimmed-tmp",
         [model.graph.input[0]] + new_nn_inputs,
         model.graph.output,
         new_nn_params
     )
     new_nn_model = helper.make_model(new_nn_graph)
-    onnx.checker.check_model(new_nn_model)
+
+    shape_inferred_model = shape_inference.infer_shapes(new_nn_model)
+    new_shape_map = {}
+    for i in range(len(shape_inferred_model.graph.value_info)):
+        dims = [d.dim_value for d in shape_inferred_model.graph.value_info[i].type.tensor_type.shape.dim]
+        new_shape_map[shape_inferred_model.graph.value_info[i].name] = dims
+    input_shape = [d.dim_value for d in input_name_map['image_input'].type.tensor_type.shape.dim]
+    new_shape_map['image_input'] = input_shape
+
+    for param in new_nn_model.graph.initializer:
+        param_name_map[param.name] = param
+
+    for inp in new_nn_model.graph.input:
+        input_name_map[inp.name] = inp
+
+    dense_nodes = [node for node in new_nn_model.graph.node if node.op_type == 'Gemm']
+    dense_node = dense_nodes[0]
+    inp_node = node_name_map[dense_node.input[0]]
+    while inp_node.op_type not in ['Conv', 'MaxPool']:
+        inp_node = node_name_map[inp_node.input[0]]
+
+    pre_dense_shape = new_shape_map[inp_node.name]
+    init_dense_layer_params = numpy_helper.to_array(param_name_map[dense_node.input[1]])
+    new_dim_input_neurons_dense = np.prod(pre_dense_shape[1:])
+    new_dense_layer_params = cv2.resize(init_dense_layer_params, (new_dim_input_neurons_dense,
+                                                                  init_dense_layer_params.shape[0]))
+    param_name_map[dense_node.input[1]].raw_data = new_dense_layer_params.tobytes()
+    param_name_map[dense_node.input[1]].dims[1] = new_dim_input_neurons_dense
+    input_name_map[dense_node.input[1]].type.tensor_type.shape.dim[1].dim_value = new_dim_input_neurons_dense
+
+    final_nn_graph = helper.make_graph(
+        new_nn_model.graph.node,
+        "ConvNet-trimmed",
+        new_nn_model.graph.input,
+        new_nn_model.graph.output,
+        new_nn_model.graph.initializer
+    )
+    final_nn_model = helper.make_model(final_nn_graph)
+
+    onnx.checker.check_model(final_nn_model)
     # shape_inferred_model = shape_inference.infer_shapes(new_nn_model)
-    return new_nn_model
+    return final_nn_model
 
 
 def logit2class_mapper():
@@ -186,7 +237,7 @@ if __name__ == '__main__':
     print('Original model -')
     print(helper.printable_graph(model.graph))
 
-    pruned_model = prune(model, 20)
+    pruned_model = prune(model, 90)
     print('Pruned model -')
     print(helper.printable_graph(pruned_model.graph))
     onnx.save_model(pruned_model, 'vgg19_pruned.onnx')
