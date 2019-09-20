@@ -29,14 +29,39 @@ import onnx
 from onnx import shape_inference, numpy_helper, helper
 
 
+def extract_linked_oneop_node_names(node_name_map, node_name):
+    linked_node_names = []
+    for k in node_name_map.keys():
+        # Expand this exclusion list with 1-to-1 ops found at https://github.com/onnx/onnx/blob/master/docs/Operators.md
+        if node_name in node_name_map[k].input and node_name_map[k].op_type in ['Relu', 'Dropout', 'MaxPool']:
+            linked_node_names.append(k)
+            linked_node_names += extract_linked_oneop_node_names(node_name_map, k)
+    return linked_node_names
+
+
+def extract_next_ingraph(node_name_map, node_name, rejected_node_names):
+    node = node_name_map[node_name]
+    if node_name not in rejected_node_names:
+        return node
+    for inp_name in node.input:
+        if inp_name in node_name_map:
+            return extract_next_ingraph(node_name_map, inp_name, rejected_node_names)
+    return -1
+
+
 def prune(model, x):
     """
     :param model: onnx model
     :param x: pruning ratio (0 to 100)
     :return: pruned model
     """
+    shape_inferred_model = shape_inference.infer_shapes(model)
+    shape_map = {}
+    for i in range(len(shape_inferred_model.graph.value_info)):
+        dims = [d.dim_value for d in shape_inferred_model.graph.value_info[i].type.tensor_type.shape.dim]
+        shape_map[shape_inferred_model.graph.value_info[i].name] = dims
     num_nodes = len(model.graph.node)
-    all_conv_node_indices = []
+    all_conv_node_names = []
     plural_nodes = []
     node_name_map = {}
     param_name_map = {}
@@ -47,8 +72,8 @@ def prune(model, x):
         if len(model.graph.node[i].output) > 1:
             plural_nodes.append(model.graph.node[i])
         if model.graph.node[i].op_type == 'Conv':
-            all_conv_node_indices.append(i)
-    all_conv_node_indices = np.array(all_conv_node_indices)
+            all_conv_node_names.append(model.graph.node[i].name)
+    all_conv_node_names = np.array(all_conv_node_names)
 
     for param in model.graph.initializer:
         param_name_map[param.name] = param
@@ -56,47 +81,62 @@ def prune(model, x):
     for inp in model.graph.input:
         input_name_map[inp.name] = inp
 
-    all_conv_node_indices_shuffled = all_conv_node_indices.copy()
-    np.random.shuffle(all_conv_node_indices_shuffled)
-    selected_conv_node_count = int(((100 - x) / 100.) * all_conv_node_indices_shuffled.shape[0])
-    rejected_node_indices = all_conv_node_indices_shuffled[selected_conv_node_count:]
-    rejected_node_names = []
-    for idx in rejected_node_indices:  # finding full sets of nodes qualified for removal
-        rejected_node_names.append(model.graph.node[idx].name)
-        idx_local = idx + 1
-
-        # Expand this exclusion list with 1-to-1 ops found at https://github.com/onnx/onnx/blob/master/docs/Operators.md
-        while model.graph.node[idx_local].op_type in ['Relu', 'Dropout', 'MaxPool']:
-            rejected_node_indices = np.hstack([rejected_node_indices, [idx_local]])
-            rejected_node_names.append(model.graph.node[idx_local].name)
-            idx_local += 1
+    all_conv_node_names_shuffled = list(all_conv_node_names.copy())
+    np.random.shuffle(all_conv_node_names_shuffled)
+    selected_conv_node_count = int(((100 - x) / 100.) * len(all_conv_node_names_shuffled))
+    rejected_node_names = all_conv_node_names_shuffled[selected_conv_node_count:]
+    for name in rejected_node_names:  # finding full sets of nodes qualified for removal
+        linked_oneop_node_names = extract_linked_oneop_node_names(node_name_map, name)
+        rejected_node_names += linked_oneop_node_names
     new_nn_nodes = []
     new_nn_input_names = []
-    for i in range(num_nodes):  # identifying required input nodes in the new neural net
-        if i in rejected_node_indices:
+    for name in node_name_map.keys():  # identifying required input nodes in the new neural net
+        if name in rejected_node_names:
             continue
         else:
-            new_nn_nodes.append(model.graph.node[i])
-            input_names = model.graph.node[i].input[1:]
-            for name in input_names:
-                if name in input_name_map:
-                    new_nn_input_names.append(name)
+            new_nn_nodes.append(node_name_map[name])
+            input_names = node_name_map[name].input
+            for input_name in input_names:
+                if input_name in input_name_map:
+                    new_nn_input_names.append(input_name)
     new_nn_input_names = list(set(new_nn_input_names))
     new_nn_inputs = [input_name_map[name] for name in new_nn_input_names]
     new_nn_params = [param_name_map[name] for name in new_nn_input_names if name != model.graph.input[0].name]
+
     for i in range(len(new_nn_nodes)):  # rewiring the neural net to fill gaps created by missing layers
-        if len(new_nn_nodes[i].input) == 0:
+        node = new_nn_nodes[i]
+        if len(node.input) == 0:
             continue
-        input_node_name = new_nn_nodes[i].input[0]
-        while input_node_name in rejected_node_names:
-            if len(node_name_map[input_node_name].input) > 0:
-                input_node_name = node_name_map[input_node_name].input[0]
-            else:
-                input_node_name = ''
-        if len(input_node_name) > 0:
-            new_nn_nodes[i].input[0] = input_node_name
-        else:
-            new_nn_nodes[i].input = new_nn_nodes[i].input[1:]
+        for j in range(len(node.input)):
+            inp_name = node.input[j]
+            if inp_name in rejected_node_names:
+                ingraph_input_node = extract_next_ingraph(node_name_map, inp_name, rejected_node_names)
+                node.input[j] = ingraph_input_node.name
+                input_shape = shape_map[ingraph_input_node.name]
+                output_shape = shape_map[new_nn_nodes[i].name]
+                in_channels = input_shape[1]
+                out_channels = output_shape[1]
+                for weight_name in node.input:
+                    if weight_name in param_name_map and len(param_name_map[weight_name].dims) == 4:
+                        conv_param_name = weight_name
+                conv_param = param_name_map[conv_param_name]
+                conv_input = input_name_map[conv_param_name]
+                conv_filter_dims = conv_param.dims  # in_channels, out_channels, kernel_height, kernel_width
+                if conv_filter_dims[0] != in_channels:
+                    filter_values = numpy_helper.to_array(conv_param)
+                    k = 0
+        k = 0
+        # input_node_name = new_nn_nodes[i].input[0]
+        # while input_node_name in rejected_node_names:
+        #     if len(node_name_map[input_node_name].input) > 0:
+        #         input_node_name = node_name_map[input_node_name].input[0]
+        #     else:
+        #         input_node_name = ''
+        # if len(input_node_name) > 0:
+        #     new_nn_nodes[i].input[0] = input_node_name
+        # else:
+        #     new_nn_nodes[i].input = new_nn_nodes[i].input[1:]
+
     new_nn_graph = helper.make_graph(
         new_nn_nodes,
         "ConvNet-trimmed",
@@ -141,15 +181,15 @@ if __name__ == '__main__':
     # ----------------- CREATION OF ONNX MODEL FROM PRETRAINED PYTORCH MODEL ----------------- #
 
     # -------------------------------- OPERATING ON ONNX MODEL -------------------------------- #
-    # model = onnx.load('vgg19.onnx')
-    # onnx.checker.check_model(model)
-    # print('Original model -')
-    # print(helper.printable_graph(model.graph))
-    #
-    # pruned_model = prune(model, 20)
-    # print('Pruned model -')
-    # print(helper.printable_graph(pruned_model.graph))
-    # onnx.save_model(pruned_model, 'vgg19_pruned.onnx')
+    model = onnx.load('vgg19.onnx')
+    onnx.checker.check_model(model)
+    print('Original model -')
+    print(helper.printable_graph(model.graph))
+
+    pruned_model = prune(model, 20)
+    print('Pruned model -')
+    print(helper.printable_graph(pruned_model.graph))
+    onnx.save_model(pruned_model, 'vgg19_pruned.onnx')
     # -------------------------------- OPERATING ON ONNX MODEL -------------------------------- #
 
     # ----------------- LOADING PRUNED ONNX MODEL AND VALIDATION IN MXNET ----------------- #
@@ -161,12 +201,28 @@ if __name__ == '__main__':
     # reshape_shape = list(proto_obj._params[inputs[1].name].asnumpy()) (previous)
     # reshape_shape = [1, 25088] (replaced with this, hacky solution for now)
     # Ideally this should be a flatten operator but PyTorch exports it as a reshape :(
-    sym, arg, aux = onnx_mxnet.import_model('vgg19.onnx')
+    sym, arg, aux = onnx_mxnet.import_model('vgg19_pruned.onnx')
     data_names = [graph_input for graph_input in sym.list_inputs()
                   if graph_input not in arg and graph_input not in aux]
-    mod = mx.mod.Module(symbol=sym, data_names=data_names, context=mx.gpu(), label_names=logitmap)
+    param_names_args = [graph_input for graph_input in arg if graph_input not in data_names]
+    param_names_aux = [graph_input for graph_input in aux if graph_input not in data_names]
+    param_shapes_args = [arg[n].shape for n in param_names_args]
+    param_shapes_aux = [arg[n].shape for n in param_names_aux]
 
+    param_names_all = param_names_args + param_names_aux
+    param_shapes_all = param_shapes_args + param_shapes_aux
+
+    all_data_names = [data_names[0]] + param_names_all
+    all_data_shapes = [im.shape] + param_shapes_all
+
+    all_data_shape_list = list(zip(all_data_names, all_data_shapes))
+
+    # mod = mx.mod.Module(symbol=sym, data_names=all_data_names, context=mx.gpu(), label_names=None)
+    mod = mx.mod.Module(symbol=sym, data_names=[data_names[0]], context=mx.gpu(), label_names=None)
+
+    # mod.bind(for_training=False, data_shapes=all_data_shape_list, label_shapes=None)
     mod.bind(for_training=False, data_shapes=[(data_names[0], im.shape)], label_shapes=None)
+
     mod.set_params(arg_params=arg, aux_params=aux, allow_missing=True, allow_extra=True)
 
     Batch = namedtuple('Batch', ['data'])
