@@ -14,6 +14,8 @@
        https://mxnet.incubator.apache.org/versions/master/api/python/contrib/onnx.html
 """
 
+from collections import namedtuple
+
 import numpy as np
 import cv2
 
@@ -131,7 +133,7 @@ if __name__ == '__main__':
     # dummy_input = torch.from_numpy(im).cuda()
     # dummy_output = model.forward(dummy_input).cpu().detach().numpy()[0]
     # out_label = logitmap[dummy_output.argmax()]
-    # print(out_label)
+    # print('PyTorch classified label -', out_label)
     # input_names = ['image_input']
     # output_names = ['logit_outs']
     # torch.onnx.export(model, dummy_input, "vgg19.onnx", verbose=True, input_names=input_names,
@@ -165,5 +167,13 @@ if __name__ == '__main__':
     mod = mx.mod.Module(symbol=sym, data_names=data_names, context=mx.gpu(), label_names=logitmap)
 
     mod.bind(for_training=False, data_shapes=[(data_names[0], im.shape)], label_shapes=None)
+    mod.set_params(arg_params=arg, aux_params=aux, allow_missing=True, allow_extra=True)
+
+    Batch = namedtuple('Batch', ['data'])
+    mod.forward(Batch([mx.nd.array(im)]))
+    out_logits = mod.get_outputs()[0].asnumpy()[0].argmax()
+    out_label = logitmap[out_logits]
+    print('MXnet classified label from convertted ONNX model -', out_label)
+
     k = 0
     # ----------------- LOADING PRUNED ONNX MODEL AND VALIDATION IN MXNET ----------------- #
