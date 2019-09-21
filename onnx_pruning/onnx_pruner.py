@@ -196,7 +196,7 @@ def prune(model, x):
     )
     final_nn_model = helper.make_model(final_nn_graph)
 
-    onnx.checker.check_model(final_nn_model)  # TODO: Sort nodes topologically
+    onnx.checker.check_model(final_nn_model)  # TODO: Sort nodes topologically, else fails when shallowest conv layer is removed
 
     return final_nn_model
 
@@ -232,15 +232,15 @@ if __name__ == '__main__':
     # ----------------- CREATION OF ONNX MODEL FROM PRETRAINED PYTORCH MODEL ----------------- #
 
     # -------------------------------- OPERATING ON ONNX MODEL -------------------------------- #
-    model = onnx.load('vgg19.onnx')
-    onnx.checker.check_model(model)
-    print('Original model -')
-    print(helper.printable_graph(model.graph))
-    
-    pruned_model = prune(model, 20)
-    print('Pruned model -')
-    print(helper.printable_graph(pruned_model.graph))
-    onnx.save_model(pruned_model, 'vgg19_pruned.onnx')
+    # model = onnx.load('vgg19.onnx')
+    # onnx.checker.check_model(model)
+    # print('Original model -')
+    # print(helper.printable_graph(model.graph))
+    #
+    # pruned_model = prune(model, 20)
+    # print('Pruned model -')
+    # print(helper.printable_graph(pruned_model.graph))
+    # onnx.save_model(pruned_model, 'vgg19_pruned.onnx')
     # -------------------------------- OPERATING ON ONNX MODEL -------------------------------- #
 
     # ----------------- LOADING PRUNED ONNX MODEL AND VALIDATION IN MXNET ----------------- #
@@ -250,7 +250,7 @@ if __name__ == '__main__':
     # to accommodate for missing shape of resulting tensor after reshaping.
     # Source code changed -
     # reshape_shape = list(proto_obj._params[inputs[1].name].asnumpy()) (previous)
-    # reshape_shape = [1, 25088] (replaced with this, hacky solution for now)
+    # reshape_shape = [1, <num_output_dense_neurons>] (replaced with this, hacky solution for now)
     # Ideally this should be a flatten operator but PyTorch exports it as a reshape :(
     sym, arg, aux = onnx_mxnet.import_model('vgg19_pruned.onnx')
     data_names = [graph_input for graph_input in sym.list_inputs()
@@ -272,7 +272,7 @@ if __name__ == '__main__':
     mod = mx.mod.Module(symbol=sym, data_names=[data_names[0]], context=mx.gpu(), label_names=None)
 
     # mod.bind(for_training=False, data_shapes=all_data_shape_list, label_shapes=None)
-    mod.bind(for_training=False, data_shapes=[(data_names[0], im.shape)], label_shapes=None)
+    mod.bind(for_training=True, data_shapes=[(data_names[0], im.shape)], label_shapes=None)
 
     mod.set_params(arg_params=arg, aux_params=aux, allow_missing=True, allow_extra=True)
 
