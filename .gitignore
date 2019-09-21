@@ -3,3 +3,4 @@ onnx_pruning/vgg19.onnx
 .idea/
 onnx_pruning/.ipynb_checkpoints/
 onnx_pruning/vgg19_pruned.onnx
+*.onnx

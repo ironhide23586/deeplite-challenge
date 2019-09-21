@@ -152,11 +152,13 @@ def prune(model, x):
     new_nn_graph = helper.make_graph(
         new_nn_nodes,
         "ConvNet-trimmed-tmp",
-        [model.graph.input[0]] + new_nn_inputs,
+        new_nn_inputs,
         model.graph.output,
         new_nn_params
     )
     new_nn_model = helper.make_model(new_nn_graph)
+    onnx.checker.check_model(new_nn_model)
+    onnx.save_model(new_nn_model, 'vgg19_pruned-tmp.onnx')
 
     shape_inferred_model = shape_inference.infer_shapes(new_nn_model)
     new_shape_map = {}
@@ -165,12 +167,6 @@ def prune(model, x):
         new_shape_map[shape_inferred_model.graph.value_info[i].name] = dims
     input_shape = [d.dim_value for d in input_name_map['image_input'].type.tensor_type.shape.dim]
     new_shape_map['image_input'] = input_shape
-
-    for param in new_nn_model.graph.initializer:
-        param_name_map[param.name] = param
-
-    for inp in new_nn_model.graph.input:
-        input_name_map[inp.name] = inp
 
     dense_nodes = [node for node in new_nn_model.graph.node if node.op_type == 'Gemm']
     dense_node = dense_nodes[0]
@@ -187,17 +183,21 @@ def prune(model, x):
     param_name_map[dense_node.input[1]].dims[1] = new_dim_input_neurons_dense
     input_name_map[dense_node.input[1]].type.tensor_type.shape.dim[1].dim_value = new_dim_input_neurons_dense
 
+    # Random conv layer removal sometimes causes the conv-layer just before the dense layer to output a large
+    # volume (spatially). This causes the number of params in the dense layer to blow up, significantly increasing
+    # nn size.
+
     final_nn_graph = helper.make_graph(
-        new_nn_model.graph.node,
+        new_nn_nodes,
         "ConvNet-trimmed",
-        new_nn_model.graph.input,
-        new_nn_model.graph.output,
-        new_nn_model.graph.initializer
+        new_nn_inputs,
+        model.graph.output,
+        new_nn_params
     )
     final_nn_model = helper.make_model(final_nn_graph)
 
-    onnx.checker.check_model(final_nn_model)
-    # shape_inferred_model = shape_inference.infer_shapes(new_nn_model)
+    onnx.checker.check_model(final_nn_model)  # TODO: Sort nodes topologically
+
     return final_nn_model
 
 
@@ -237,7 +237,7 @@ if __name__ == '__main__':
     print('Original model -')
     print(helper.printable_graph(model.graph))
 
-    pruned_model = prune(model, 90)
+    pruned_model = prune(model, 20)
     print('Pruned model -')
     print(helper.printable_graph(pruned_model.graph))
     onnx.save_model(pruned_model, 'vgg19_pruned.onnx')
