@@ -236,7 +236,7 @@ if __name__ == '__main__':
     onnx.checker.check_model(model)
     print('Original model -')
     print(helper.printable_graph(model.graph))
-
+    
     pruned_model = prune(model, 20)
     print('Pruned model -')
     print(helper.printable_graph(pruned_model.graph))
